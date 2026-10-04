@@ -80,6 +80,8 @@ describe('Security regression — request input handling', () => {
     expect(res.status).toBe(413);
     expect(res.body).toHaveProperty('error');
     expect(res.body.error).toHaveProperty('code', 'PAYLOAD_TOO_LARGE');
+  });
+
   it('returns 400 for malformed JSON input', async () => {
     const raw = '{"title": "test", '; // Unterminated JSON
 
@@ -90,6 +92,7 @@ describe('Security regression — request input handling', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
+    expect(res.body.error.code).toBe('BAD_REQUEST');
     // express.json() throws a SyntaxError with status 400 which is mapped
     // to a generic format by the error handler, but it should definitely be 400.
   });

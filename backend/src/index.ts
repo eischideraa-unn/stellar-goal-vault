@@ -1149,6 +1149,17 @@ app.use((err: unknown, req: Request, res: Response, next: express.NextFunction) 
     });
   }
 
+  if (isErrorWithType(err, 'entity.parse.failed')) {
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'BAD_REQUEST',
+        message: 'Malformed JSON payload.',
+        requestId: (req as RequestWithId).requestId,
+      },
+    });
+  }
+
   if (isErrorWithMessage(err) && err.message === 'Not allowed by CORS') {
     return res.status(403).json({
       success: false,
