@@ -1,12 +1,22 @@
 #[cfg(test)]
 mod tests {
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events as _, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
         Address, Env, String,
     };
 
     use crate::{StellarGoalVaultContract, StellarGoalVaultContractClient};
+    // Keep contract tests independent of the machine clock and local timezone.
+    // Soroban timestamps are UTC Unix seconds; epoch zero preserves the mock
+    // ledger's historical test behavior while making the chosen time explicit.
+    const TEST_LEDGER_TIMESTAMP: u64 = 0;
+
+    fn test_env() -> Env {
+        let env = Env::default();
+        env.ledger().set_timestamp(TEST_LEDGER_TIMESTAMP);
+        env
+    }
 
     fn deploy_contract(env: &Env) -> StellarGoalVaultContractClient<'_> {
         let contract_id = env.register_contract(None, StellarGoalVaultContract);
@@ -39,7 +49,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_per_contributor must not exceed target_amount")]
     fn test_create_campaign_rejects_cap_above_target() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -62,7 +72,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_allows_cap_equal_target() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -89,7 +99,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "accepted_tokens must contain valid token contract addresses")]
     fn test_create_campaign_rejects_non_token_address() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -113,7 +123,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "metadata must not exceed 500 bytes")]
     fn test_create_campaign_rejects_oversized_metadata() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -138,7 +148,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_accepts_metadata_exactly_500_bytes() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -163,8 +173,68 @@ mod tests {
     }
 
     #[test]
+    fn test_create_campaign_emits_structured_event() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        let deadline = env.ledger().timestamp() + 1_000;
+        let campaign_id = client.create_campaign(
+            &creator,
+            &soroban_sdk::vec![&env, token.clone()],
+            &500_i128,
+            &deadline,
+            &String::from_str(&env, "event test"),
+            &0_i128,
+            &soroban_sdk::vec![&env],
+            &0_u32,
+        );
+
+        assert_eq!(campaign_id, 1);
+        let events = env.events().all();
+        assert!(
+            !events.is_empty(),
+            "campaign creation must emit an event"
+        );
+    }
+
+    #[test]
+    fn test_create_campaign_rejection_emits_no_event() {
+        let env = test_env();
+        env.mock_all_auths();
+
+        let creator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = deploy_token(&env, &admin, &creator, 1_000);
+        let client = deploy_contract(&env);
+
+        let long_meta = oversized_metadata(&env, 501);
+        let result = crate::std::panic::catch_unwind(crate::std::panic::AssertUnwindSafe(|| {
+            client.create_campaign(
+                &creator,
+                &soroban_sdk::vec![&env, token.clone()],
+                &500_i128,
+                &(env.ledger().timestamp() + 1_000),
+                &long_meta,
+                &0_i128,
+                &soroban_sdk::vec![&env],
+                &0_u32,
+            );
+        }));
+        assert!(result.is_err(), "creation must be rejected");
+        assert!(
+            env.events().all().is_empty(),
+            "failed creation must not emit a success event"
+        );
+    }
+
+    #[test]
     fn test_create_campaign_rejection_does_not_mutate_state() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -213,7 +283,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "too many accepted tokens")]
     fn test_create_campaign_rejects_count_before_duplicate_scan() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -246,7 +316,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "per-contributor cap exceeded")]
     fn test_contribute_enforces_per_contributor_cap_across_tokens() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -280,7 +350,7 @@ mod tests {
 
     #[test]
     fn test_contribute_allows_exactly_at_per_contributor_cap() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -309,7 +379,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "per-contributor cap exceeded")]
     fn test_contribute_rejects_pledge_over_per_contributor_cap() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -336,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_claim_success() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -374,7 +444,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "creator mismatch")]
     fn test_claim_creator_mismatch() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -408,7 +478,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign is still active")]
     fn test_claim_before_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -439,7 +509,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign is not funded")]
     fn test_claim_underfunded() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -472,7 +542,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already claimed")]
     fn test_claim_double_claim() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -505,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_get_campaign_count_tracks_creates() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -558,7 +628,7 @@ mod tests {
 
     #[test]
     fn test_contributor_count_zero_on_new_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -582,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_contributor_count_single_contributor() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -609,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_contributor_count_multiple_unique_contributors() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -651,7 +721,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "too many accepted tokens")]
     fn test_max_accepted_tokens_rejects_overflow() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -679,7 +749,7 @@ mod tests {
 
     #[test]
     fn test_max_accepted_tokens_allows_exactly_10() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -711,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_initialize_sets_admin_and_unpaused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -723,7 +793,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already initialized")]
     fn test_initialize_panics_if_called_twice() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -733,7 +803,7 @@ mod tests {
 
     #[test]
     fn test_admin_can_pause_and_unpause() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -749,7 +819,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "caller is not admin")]
     fn test_non_admin_cannot_pause() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -761,7 +831,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contract is paused")]
     fn test_contribute_blocked_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let contributor = Address::generate(&env);
@@ -788,7 +858,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contract is paused")]
     fn test_create_campaign_blocked_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -813,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_succeeds_when_unpaused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -847,7 +917,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contract is paused")]
     fn test_claim_blocked_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let contributor = Address::generate(&env);
@@ -877,7 +947,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contract is paused")]
     fn test_refund_blocked_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let contributor = Address::generate(&env);
@@ -907,7 +977,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contract is paused")]
     fn test_cancel_campaign_blocked_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let admin = Address::generate(&env);
@@ -932,7 +1002,7 @@ mod tests {
 
     #[test]
     fn test_read_only_functions_work_when_paused() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let admin = Address::generate(&env);
@@ -961,7 +1031,7 @@ mod tests {
 
     #[test]
     fn test_cancel_campaign_success() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let admin = Address::generate(&env);
@@ -986,7 +1056,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "creator mismatch")]
     fn test_cancel_campaign_non_creator_rejected() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let attacker = Address::generate(&env);
@@ -1012,7 +1082,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already claimed")]
     fn test_cancel_campaign_already_claimed_rejected() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let contributor = Address::generate(&env);
@@ -1045,7 +1115,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already canceled")]
     fn test_cancel_campaign_double_cancel_rejected() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let admin = Address::generate(&env);
@@ -1070,7 +1140,7 @@ mod tests {
 
     #[test]
     fn test_refund_works_on_canceled_campaign_before_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let creator = Address::generate(&env);
         let contributor = Address::generate(&env);
@@ -1111,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_contributor_count_no_double_count_on_repeat_pledge() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1142,7 +1212,7 @@ mod tests {
 
     #[test]
     fn test_contributor_count_no_double_count_multiple_tokens() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1177,7 +1247,7 @@ mod tests {
 
     #[test]
     fn test_default_min_contribution_is_100() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         assert_eq!(client.get_min_contribution(), 100);
@@ -1185,7 +1255,7 @@ mod tests {
 
     #[test]
     fn test_initialize_sets_custom_min_contribution() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -1196,7 +1266,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contribution below minimum")]
     fn test_contribute_rejects_99_stroops() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1223,7 +1293,7 @@ mod tests {
 
     #[test]
     fn test_contribute_accepts_exactly_100_stroops() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1251,7 +1321,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "contribution below minimum")]
     fn test_contribute_rejects_below_custom_min() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1279,7 +1349,7 @@ mod tests {
 
     #[test]
     fn test_contribute_accepts_at_custom_min() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1308,7 +1378,7 @@ mod tests {
 
     #[test]
     fn test_update_metadata_success() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1343,7 +1413,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "creator mismatch")]
     fn test_update_metadata_rejects_non_creator() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1369,7 +1439,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign deadline reached")]
     fn test_update_metadata_rejects_after_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1397,7 +1467,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign canceled")]
     fn test_update_metadata_rejects_canceled_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1428,7 +1498,7 @@ mod tests {
 
     #[test]
     fn test_request_extension_stores_request() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1463,7 +1533,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "caller is not a contributor")]
     fn test_request_extension_rejects_non_contributor() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1491,7 +1561,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "new deadline exceeds maximum campaign duration")]
     fn test_request_extension_rejects_excessive_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1520,7 +1590,7 @@ mod tests {
 
     #[test]
     fn test_approve_extension_applies_when_majority_reached() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1571,7 +1641,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already voted")]
     fn test_approve_extension_rejects_double_vote() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1615,7 +1685,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already claimed")]
     fn test_request_extension_rejects_claimed_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1648,7 +1718,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_with_co_creators_success() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1678,7 +1748,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_with_co_creators_get_co_creators() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1707,7 +1777,7 @@ mod tests {
 
     #[test]
     fn test_create_campaign_with_co_creators_is_not_approved_initially() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1734,7 +1804,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "approval_threshold must be > 0 when co_creators provided")]
     fn test_create_campaign_rejects_zero_threshold_with_co_creators() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1758,7 +1828,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "approval_threshold cannot exceed number of co_creators")]
     fn test_create_campaign_rejects_threshold_exceeds_co_creators() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1782,7 +1852,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "co_creators must not be empty when approval_threshold > 0")]
     fn test_create_campaign_rejects_threshold_without_co_creators() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1805,7 +1875,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "creator cannot be a co-creator")]
     fn test_create_campaign_rejects_creator_as_co_creator() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1828,7 +1898,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate co-creator addresses")]
     fn test_create_campaign_rejects_duplicate_co_creators() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1851,7 +1921,7 @@ mod tests {
 
     #[test]
     fn test_approve_campaign_success_meets_threshold() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1885,7 +1955,7 @@ mod tests {
 
     #[test]
     fn test_approve_campaign_success_single_co_creator() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1913,7 +1983,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign does not require approval")]
     fn test_approve_campaign_rejects_non_multi_sig_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1939,7 +2009,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "approver is not a co-creator")]
     fn test_approve_campaign_rejects_non_co_creator() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1966,7 +2036,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "already approved")]
     fn test_approve_campaign_rejects_double_approval() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -1993,7 +2063,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already finalized")]
     fn test_approve_campaign_rejects_claimed_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2019,7 +2089,7 @@ mod tests {
         // Approve it first
         client.approve_campaign(&campaign_id, &co_creator1);
         client.contribute(&campaign_id, &contributor, &token, &1_000);
-        env.ledger().with_mut(|l| l.timestamp += 101);
+        advance_time(&env, 101);
         client.claim(&campaign_id, &creator);
 
         // Now try to approve again (already claimed)
@@ -2029,7 +2099,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign already finalized")]
     fn test_approve_campaign_rejects_canceled_campaign() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2056,7 +2126,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign not approved")]
     fn test_contribute_blocked_when_not_approved() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2083,7 +2153,7 @@ mod tests {
 
     #[test]
     fn test_contribute_allowed_after_approval() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2115,7 +2185,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign not approved")]
     fn test_claim_blocked_when_not_approved() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2137,7 +2207,7 @@ mod tests {
         );
 
         client.contribute(&campaign_id, &contributor, &token, &1_000);
-        env.ledger().with_mut(|l| l.timestamp += 101);
+        advance_time(&env, 101);
 
         // Campaign not approved - claim should fail
         client.claim(&campaign_id, &creator);
@@ -2145,7 +2215,7 @@ mod tests {
 
     #[test]
     fn test_claim_allowed_after_approval() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2169,7 +2239,7 @@ mod tests {
         // Approve FIRST, then contribute
         client.approve_campaign(&campaign_id, &co_creator1);
         client.contribute(&campaign_id, &contributor, &token, &1_000);
-        env.ledger().with_mut(|l| l.timestamp += 101);
+        advance_time(&env, 101);
 
         client.claim(&campaign_id, &creator);
 
@@ -2178,7 +2248,7 @@ mod tests {
 
     #[test]
     fn test_is_campaign_approved_backward_compatible() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2204,7 +2274,7 @@ mod tests {
 
     #[test]
     fn test_get_campaign_approvals_returns_zero_for_non_multi_sig() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2228,7 +2298,7 @@ mod tests {
 
     #[test]
     fn test_get_co_creators_returns_empty_for_non_multi_sig() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2255,7 +2325,7 @@ mod tests {
 
     #[test]
     fn test_default_fee_bps_is_50() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
 
@@ -2265,7 +2335,7 @@ mod tests {
 
     #[test]
     fn test_default_fee_recipient_is_none() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
 
@@ -2275,7 +2345,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "caller is not admin")]
     fn test_set_fee_admin_only() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -2289,7 +2359,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "caller is not admin")]
     fn test_set_fee_recipient_admin_only() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -2303,7 +2373,7 @@ mod tests {
 
     #[test]
     fn test_set_fee_and_recipient() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
         let client = deploy_contract(&env);
         let admin = Address::generate(&env);
@@ -2319,7 +2389,7 @@ mod tests {
 
     #[test]
     fn test_claim_deducts_fee() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2366,7 +2436,7 @@ mod tests {
 
     #[test]
     fn test_claim_zero_fee_disables_mechanism() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2409,7 +2479,7 @@ mod tests {
 
     #[test]
     fn test_claim_no_recipient_no_fee() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2449,7 +2519,7 @@ mod tests {
 
     #[test]
     fn test_fee_collected_event_emitted() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2491,7 +2561,7 @@ mod tests {
 
     #[test]
     fn test_fee_collected_not_emitted_when_fee_zero() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2538,7 +2608,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "target amount must be positive")]
     fn test_create_campaign_rejects_non_positive_target() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2561,7 +2631,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "deadline must be in the future")]
     fn test_create_campaign_rejects_past_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2585,7 +2655,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "deadline exceeds maximum campaign duration")]
     fn test_create_campaign_rejects_duration_over_max() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2610,7 +2680,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "accepted_tokens must not be empty")]
     fn test_create_campaign_rejects_empty_accepted_tokens() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2631,7 +2701,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "duplicate token addresses")]
     fn test_create_campaign_rejects_duplicate_tokens() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2654,7 +2724,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_per_contributor must not be negative")]
     fn test_create_campaign_rejects_negative_max_per_contributor() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2677,7 +2747,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign not found")]
     fn test_get_campaign_missing_id_panics() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let client = deploy_contract(&env);
@@ -2687,7 +2757,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign funding cap exceeded")]
     fn test_contribute_rejects_funding_cap_exceeded() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2713,7 +2783,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "token not accepted by this campaign")]
     fn test_contribute_rejects_unaccepted_token() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2740,7 +2810,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "campaign deadline reached")]
     fn test_contribute_rejects_after_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2768,7 +2838,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "funded campaigns cannot be refunded")]
     fn test_refund_rejects_funded_campaign_after_deadline() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2797,7 +2867,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "nothing to refund")]
     fn test_refund_rejects_when_nothing_to_refund() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let creator = Address::generate(&env);
@@ -2828,7 +2898,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "fee must be non-negative")]
     fn test_set_fee_rejects_negative() {
-        let env = Env::default();
+        let env = test_env();
         env.mock_all_auths();
 
         let admin = Address::generate(&env);
